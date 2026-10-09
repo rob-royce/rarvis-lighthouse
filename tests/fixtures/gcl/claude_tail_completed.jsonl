@@ -1,0 +1,6 @@
+{"type":"attachment","attachment":{"type":"hook_response","event":"PreToolUse"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Synthetic completed response."}],"stop_reason":"end_turn"}}
+{"type":"attachment","attachment":{"type":"hook_response","event":"Stop"}}
+{"type":"attachment","attachment":{"type":"summary","event":"Stop"}}
+{"type":"system","subtype":"stop_hook_summary","content":"Stop hook completed"}
+{"type":"system","subtype":"turn_duration","durationMs":1000}
