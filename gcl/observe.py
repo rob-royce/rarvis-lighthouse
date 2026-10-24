@@ -1,6 +1,7 @@
 """Fail-open, observation-only hooks for native interactive sessions."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -162,8 +163,16 @@ def export_beta_summary(store, support_minutes=0, false_positives=0, key_takeawa
                                "(SELECT 1 FROM events e WHERE e.mission_id=m.id "
                                "AND e.type IN ('mission.completed','mission.succeeded'))").fetchone()[0]
         rollovers = db.execute("SELECT COUNT(*) FROM rollovers").fetchone()[0]
-        days = db.execute("SELECT COUNT(DISTINCT date(e.created_at)) FROM events e "
-                          "JOIN missions m ON m.id=e.mission_id").fetchone()[0]
+        timestamps = db.execute("SELECT e.created_at FROM events e "
+                                "JOIN missions m ON m.id=e.mission_id")
+        utc_dates = set()
+        for (timestamp,) in timestamps:
+            parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            # SQLite CURRENT_TIMESTAMP is timezone-free UTC, never local time.
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            utc_dates.add(parsed.astimezone(timezone.utc).date().isoformat())
+        days = len(utc_dates)
     finally:
         db.close()
     return {"schema_version": "gcl.beta_summary.v1", "missions_total": missions,

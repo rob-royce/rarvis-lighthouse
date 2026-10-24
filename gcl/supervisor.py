@@ -92,6 +92,29 @@ class Supervisor:
         self.note("runtime.turn_policy_sent", {"session_id": session_id, **sent, "at": time.time()})
 
     def _policy_continuity(self, rid: str, epoch: int, predecessor: str, successor: str) -> bool:
+        if self.config["executor"] == "claude":
+            from gcl.adapters.claude_bg import resolve_rollover_permissions
+            binding = {"rollover_id": rid, "epoch": epoch,
+                       "predecessor_session_id": predecessor, "successor_session_id": successor}
+            try:
+                before = read_json(self.adapter._path(predecessor) / "launch.json").get("resolved_permissions")
+                after = read_json(self.adapter._path(successor) / "launch.json").get("resolved_permissions")
+                if not isinstance(before, dict) or not isinstance(after, dict):
+                    raise PermissionError("Missing persisted permission boundary")
+                # Validate both complete receipts, then prove the successor needs no clamping.
+                resolve_rollover_permissions({}, after)
+                resolved = resolve_rollover_permissions(dict(after, reject_permission_escalation=True), before)
+                if resolved != after:
+                    raise PermissionError("Successor permission boundary widened")
+            except (PermissionError, ValueError, TypeError, AttributeError, OSError, AppServerError):
+                reason = "permission_boundary_unknown_or_widened"
+                self.note("runtime.permission_continuity_blocked", dict(binding, reason=reason))
+                self._recover(rid, reason, predecessor)
+                return False
+            self.note("runtime.policy_continuity_checked", dict(binding,
+                      predecessor_permissions=before, successor_permissions=after,
+                      permission_continuity_verified=True))
+            return True
         if self.config["executor"] != "codex":
             return True
         blocked = _latest(self.events, "runtime.policy_continuity_blocked", rollover_id=rid)

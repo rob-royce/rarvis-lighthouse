@@ -114,7 +114,18 @@ def _authorize_pretool(payload, home, mission, launch, epoch):
     sid = payload.get("session_id") or read_json(path / "resolved.json").get("session_id")
     if not sid or not registered(store, mission, sid, epoch):
         return _denied("GCL unmanaged Claude session")
-    tool = payload.get("tool_name", "")
+    tool = payload.get("tool_name") or payload.get("tool") or ""
+    launch_info = read_json(path / "launch.json")
+    permissions = launch_info.get("resolved_permissions") or {}
+    tools = permissions.get("allowed_tools")
+    if tools is not None:
+        # Scoped CLI rules identify their base tool here; Claude enforces the scope.
+        if (not isinstance(tools, list) or not isinstance(tool, str) or not tool or
+                not all(isinstance(rule, str) and rule for rule in tools) or
+                not any(rule == tool or
+                        (rule.endswith(")") and "(" in rule and rule.split("(", 1)[0] == tool)
+                        for rule in tools)):
+            return _denied("GCL tool outside resolved_permissions.allowed_tools")
     command = (payload.get("tool_input") or {}).get("command", "")
     allowed_worker = tool == "Bash" and _worker_command(command, home, mission, sid, epoch)
     if store.check_writer(mission, sid, epoch):
@@ -133,7 +144,6 @@ def _authorize_pretool(payload, home, mission, launch, epoch):
         if closed and tool not in READ_TOOLS and not allowed_worker:
             return _denied("GCL mission is quiescing")
         return {}
-    launch_info = read_json(path / "launch.json")
     current_epoch, current_sid = store.current_writer(mission)
     if launch_info.get("read_only") and current_epoch + 1 == epoch and not current_sid == sid:
         successor_worker = tool == "Bash" and _worker_command(command, home, mission, sid, epoch, successor=True)

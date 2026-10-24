@@ -86,3 +86,19 @@ def test_cli_missing_store_does_not_create_ledger(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         run(_parser().parse_args(["--home", str(tmp_path), "beta-summary"]))
     assert not (tmp_path / "state.sqlite").exists()
+
+
+@pytest.mark.parametrize("timestamps,days", [
+    (["2026-10-23T23:30:00+00:00", "2026-10-24T01:30:00+02:00"], 1),
+    (["2026-10-23T23:30:00Z", "2026-10-24T02:30:00+02:00"], 2),
+    (["2026-10-24T00:30:00+08:00", "2026-10-23T23:30:00Z"], 1),
+    (["2026-10-23 23:30:00", "2026-10-24T01:30:00+02:00"], 1),
+])
+def test_active_days_normalized_to_utc(tmp_path, timestamps, days):
+    store = LocalStore(tmp_path / "state.sqlite")
+    with store._tx() as db:
+        db.execute("INSERT INTO missions(id,version,mode) VALUES ('m',1,'OFF')")
+        for timestamp in timestamps:
+            db.execute("INSERT INTO events(mission_id,type,data,created_at) VALUES ('m','activity','{}',?)",
+                       (timestamp,))
+    assert export_beta_summary(store)["active_days_count"] == days

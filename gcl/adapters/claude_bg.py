@@ -49,10 +49,13 @@ def resolve_rollover_permissions(config, predecessor_permissions=None):
         previous_mode = before["permission_mode"]
         if not isinstance(previous_mode, str) or previous_mode not in _PERMISSION_LEVELS:
             raise ValueError("Unsupported permission_mode")
+        # Omission must not re-enable ambient settings above a concrete ceiling.
+        if mode == "inherit" and previous_mode != "inherit":
+            mode = previous_mode
         if _PERMISSION_LEVELS[mode] > _PERMISSION_LEVELS[previous_mode]:
             if config.get("reject_permission_escalation"):
                 raise PermissionError("Permission mode escalation refused")
-            mode = previous_mode
+            mode = "default" if previous_mode == "inherit" else previous_mode
         previous_tools = before["allowed_tools"]
         if previous_tools is not None:
             previous_set = set(previous_tools)
