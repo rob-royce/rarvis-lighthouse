@@ -39,7 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--approval-policy", choices=("inherit", "never", "on-request", "on-failure",
                                                       "untrusted"), default="inherit")
     start.add_argument("--permission-mode", default="inherit")
-    start.add_argument("--allowed-tools", action="append", default=[])
+    start.add_argument("--allowed-tools", action="append", default=None)
     start.add_argument("--runtime-policy", action="append", default=[])
     start.add_argument("--done-check")
     start.add_argument("--allow-self-complete", action="store_true",
@@ -92,6 +92,10 @@ def _parser() -> argparse.ArgumentParser:
     adopt = sub.add_parser("adopt")
     adopt.add_argument("mission")
     adopt.add_argument("--mode", choices=("CONTROLLED_AUTO",), required=True)
+    beta = sub.add_parser("beta-summary")
+    beta.add_argument("--support-minutes", type=int, default=0)
+    beta.add_argument("--false-positives", type=int, default=0)
+    beta.add_argument("--key-takeaway-present", action="store_true")
     sub.add_parser("enable")
     sub.add_parser("disable")
     goal = sub.add_parser("goal")
@@ -289,6 +293,13 @@ def run(args: argparse.Namespace) -> object:
     if args.command == "help":
         return _parser().format_help()
     home = home_path(args.home)
+    if args.command == "beta-summary":
+        from gcl.observe import export_beta_summary
+        # Open the existing ledger read-only; exporting must not create or migrate it.
+        from types import SimpleNamespace
+        return export_beta_summary(SimpleNamespace(path=home / "state.sqlite"),
+                                   args.support_minutes, args.false_positives,
+                                   args.key_takeaway_present)
     if args.command == "hook":
         from gcl.observe import handle, record_error, disabled
         if disabled(home):

@@ -144,3 +144,31 @@ def record_error(home: Path, executor: str, event: str, payload: dict, exc: Exce
             LocalStore(home / "state.sqlite").note_event(mapping["mission"], "runtime.hook_error", record)
     except Exception:
         pass
+
+
+def export_beta_summary(store, support_minutes=0, false_positives=0, key_takeaway_present=False):
+    """Voluntary offline aggregates only. Never select event content or identifiers."""
+    for name, value in (("support_minutes", support_minutes), ("false_positives", false_positives)):
+        if type(value) is not int or value < 0:
+            raise ValueError(name + " must be a non-negative integer")
+    if type(key_takeaway_present) is not bool:
+        raise ValueError("key_takeaway_present must be a boolean")
+    uri = Path(store.path).resolve().as_uri() + "?mode=ro"
+    db = sqlite3.connect(uri, uri=True)
+    try:
+        db.execute("BEGIN")  # One consistent snapshot for all counters.
+        missions = db.execute("SELECT COUNT(*) FROM missions").fetchone()[0]
+        completed = db.execute("SELECT COUNT(*) FROM missions m WHERE EXISTS "
+                               "(SELECT 1 FROM events e WHERE e.mission_id=m.id "
+                               "AND e.type IN ('mission.completed','mission.succeeded'))").fetchone()[0]
+        rollovers = db.execute("SELECT COUNT(*) FROM rollovers").fetchone()[0]
+        days = db.execute("SELECT COUNT(DISTINCT date(e.created_at)) FROM events e "
+                          "JOIN missions m ON m.id=e.mission_id").fetchone()[0]
+    finally:
+        db.close()
+    return {"schema_version": "gcl.beta_summary.v1", "missions_total": missions,
+            "missions_completed": completed, "rollovers_total": rollovers,
+            "active_days_count": days, "repeat_use_qualified": days >= 2 or missions >= 2,
+            "support_minutes": support_minutes, "false_positives": false_positives,
+            "key_takeaway_present": key_takeaway_present,
+            "privacy_mode": "STATS_ONLY_NO_CONTENT_NO_PATHS"}

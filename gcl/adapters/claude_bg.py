@@ -18,6 +18,51 @@ from gcl.core.store import LocalStore
 from gcl.runtime.files import read_json, write_json
 
 
+_PERMISSION_LEVELS = {"plan": 0, "default": 1, "inherit": 1,
+                      "acceptEdits": 2, "bypassPermissions": 3}
+_UNKNOWN_BOUNDARY = "Predecessor permission boundary is UNKNOWN; refusing rollover"
+
+
+def resolve_rollover_permissions(config, predecessor_permissions=None):
+    """Resolve a permission ceiling without confusing absent and empty allowlists."""
+    mode = config.get("permission_mode", "inherit")
+    if not isinstance(mode, str) or mode not in _PERMISSION_LEVELS:
+        raise ValueError("Unsupported permission_mode")
+
+    def valid_tools(tools):
+        return tools is None or (isinstance(tools, (list, tuple)) and
+                                 all(isinstance(t, str) and t and t != "UNKNOWN" for t in tools))
+
+    tools = config.get("allowed_tools")
+    if not valid_tools(tools):
+        raise ValueError("Invalid allowed_tools")
+    if predecessor_permissions is None:
+        predecessor_permissions = config.get("predecessor_permissions")
+    if predecessor_permissions is not None:
+        before = predecessor_permissions
+        if (not isinstance(before, dict) or
+                not {"permission_mode", "allowed_tools"} <= before.keys() or
+                any(isinstance(v, str) and v == "UNKNOWN" for v in before.values()) or
+                not isinstance(before.get("permission_mode"), str) or
+                not valid_tools(before.get("allowed_tools"))):
+            raise PermissionError(_UNKNOWN_BOUNDARY)
+        previous_mode = before["permission_mode"]
+        if not isinstance(previous_mode, str) or previous_mode not in _PERMISSION_LEVELS:
+            raise ValueError("Unsupported permission_mode")
+        if _PERMISSION_LEVELS[mode] > _PERMISSION_LEVELS[previous_mode]:
+            if config.get("reject_permission_escalation"):
+                raise PermissionError("Permission mode escalation refused")
+            mode = previous_mode
+        previous_tools = before["allowed_tools"]
+        if previous_tools is not None:
+            previous_set = set(previous_tools)
+            tools = (list(previous_tools) if tools is None else
+                     [t for t in tools if t in previous_set])
+    if tools is not None and not tools:
+        raise PermissionError("Empty allowed_tools intersection cannot be safely enforced by CLI; refusing rollover")
+    return {"permission_mode": mode, "allowed_tools": None if tools is None else list(tools)}
+
+
 class ClaudeBackground:
     def __init__(self, config: dict, directory: Path):
         self.config, self.directory = config, directory
@@ -25,6 +70,8 @@ class ClaudeBackground:
         self.binary = os.environ.get("GCL_CLAUDE_BIN", "claude")
         self.pending: tuple[int, str, bool] | None = None
         self.launches: dict[str, Path] = {}
+        self.resolved_permissions: dict | None = None
+        self._predecessor_permissions: dict | None = None
         self._quiet_observations: dict[str, tuple[str, int, int, float]] = {}
         self._agent_observations: dict[str, tuple[str | None, str | None] | None] = {}
 
@@ -34,7 +81,17 @@ class ClaudeBackground:
     def close(self, detach: bool = False) -> None:
         pass  # Background workers survive the controller.
 
-    def prepare_launch(self, epoch: int, prompt: str, read_only: bool = False) -> None:
+    def prepare_launch(self, epoch: int, prompt: str, read_only: bool = False,
+                       predecessor_session_id: str | None = None) -> None:
+        self.pending = None
+        self._predecessor_permissions = None
+        if predecessor_session_id is not None:
+            try:
+                boundary = read_json(self._path(predecessor_session_id) / "launch.json").get("resolved_permissions")
+            except (AppServerError, OSError, ValueError, AttributeError):
+                raise PermissionError(_UNKNOWN_BOUNDARY) from None
+            self._predecessor_permissions = boundary if boundary is not None else {
+                "permission_mode": "UNKNOWN", "allowed_tools": None}
         self.pending = epoch, prompt, read_only
 
     def _run(self, *args: str, timeout: float = 15, cwd: str | None = None) -> subprocess.CompletedProcess:
@@ -73,22 +130,27 @@ class ClaudeBackground:
             raise AppServerError("Claude launch prompt is missing")
         epoch, prompt, read_only = self.pending
         self.pending = None
+        before = self._predecessor_permissions
+        if epoch > 1 and before is None and self.config.get("predecessor_permissions") is None:
+            raise PermissionError(_UNKNOWN_BOUNDARY)
+        permissions = resolve_rollover_permissions(self.config, before)
+        self.resolved_permissions = permissions
         token = uuid.uuid4().hex
         path = self.directory / "sessions" / token
         path.mkdir(parents=True, exist_ok=True)
         capability = secrets.token_hex(32)
         write_json(path / "launch.json", {"epoch": epoch, "brief": prompt, "read_only": read_only,
-                                           "cwd": cwd,
+                                           "cwd": cwd, "resolved_permissions": permissions,
                                            "launched_at": time.time()})
         write_json(path / "turn.json", {"id": uuid.uuid4().hex, "started_at": time.time(),
                                          "started_monotonic": time.monotonic()})
         self._settings(path, epoch, capability)
         argv = ["--bg", "--session-id", token, "--settings", str(path / "settings.json"),
                 "-n", f"gcl:{self.mission[:8]}·{epoch}"]
-        permission_mode = self.config.get("permission_mode", "inherit")
+        permission_mode = permissions["permission_mode"]
         if permission_mode != "inherit":
             argv += ["--permission-mode", permission_mode]
-        tools = self.config.get("allowed_tools", [])
+        tools = permissions["allowed_tools"]
         if tools:
             argv.append("--allowedTools=" + ",".join(tools))
         output = self._run(*argv, "--", prompt, cwd=cwd).stdout
@@ -103,7 +165,8 @@ class ClaudeBackground:
             if agent:
                 sid = agent["sessionId"]
                 self.launches[sid] = path
-                write_json(path / "resolved.json", {"session_id": sid, "bg_id": short})
+                write_json(path / "resolved.json", {"session_id": sid, "bg_id": short,
+                                                   "resolved_permissions": permissions})
                 return sid
             time.sleep(.05)
         raise AppServerError("Claude background sessionId could not be resolved")
@@ -119,7 +182,8 @@ class ClaudeBackground:
 
     def resume_thread(self, session_id: str) -> None:
         # Compatibility with the controller interface: resolve an existing session only.
-        self._path(session_id)
+        path = self._path(session_id)
+        self.resolved_permissions = read_json(path / "launch.json").get("resolved_permissions")
 
     def set_goal(self, session_id: str, objective: str | None, status: str) -> None:
         pass  # GCL beacon is the Claude goal authority.

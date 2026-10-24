@@ -650,7 +650,9 @@ class Supervisor:
                             self.adapter.prepare_launch(epoch + 1,
                                 self._successor_brief(checkpoint, epoch + 1) if self.config["executor"] == "claude" else
                                 "Read-only verification: verify the workspace against this checkpoint.\n" +
-                                self._brief(checkpoint), read_only=True)
+                                self._brief(checkpoint), read_only=True,
+                                **({"predecessor_session_id": predecessor}
+                                   if self.config["executor"] == "claude" else {}))
                         self.writer_guard()
                         successor = self.adapter.create_thread(checkpoint["repo"]["path"])
                         if self.config["executor"] == "codex":
@@ -661,6 +663,11 @@ class Supervisor:
                                                                 "at": time.time()})
                         created = _latest(self.events, "runtime.successor_created", rollover_id=rid)
                         break
+                    except PermissionError as exc:
+                        self.note("runtime.permission_continuity_blocked", {"rollover_id": rid,
+                                  "session_id": predecessor, "error": str(exc)})
+                        self._recover(rid, "permission_boundary_unknown_or_widened", predecessor)
+                        return
                     except AppServerError as exc:
                         kind = classify_error(exc)
                         if kind:
