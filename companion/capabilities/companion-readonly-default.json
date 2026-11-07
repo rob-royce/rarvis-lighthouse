@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "companion-readonly-default",
+  "description": "Strict read-only IPC capability for RARVIS-Lighthouse Companion. Disallows outbound network, arbitrary shell execution, and direct SQLite writes.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:event:default"
+  ]
+}
